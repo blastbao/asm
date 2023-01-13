@@ -2,6 +2,10 @@
 
 //go:build !purego
 
+// https://pkg.go.dev/github.com/mmcloughlin/avo/x86#JB
+
+
+
 #include "textflag.h"
 
 // func Copy(dst []byte, src []byte) int
@@ -11,20 +15,20 @@ TEXT ·Copy(SB), NOSPLIT, $0-56
 	MOVQ    src_base+24(FP), CX
 	MOVQ    dst_len+8(FP), DX
 	MOVQ    src_len+32(FP), BX
-	CMPQ    BX, DX
-	CMOVQLT BX, DX
-	MOVQ    DX, ret+48(FP)
+	CMPQ    BX, DX                  // CMPQ    比较 BX 和 DX 的值，设置 FLAG 寄存器，一般配合 JGE，JLT 使用
+	CMOVQLT BX, DX                  // CMOVQLT 比较 BX 和 DX 的值，如果 BX < DX ，就把 BX 值赋给 DX ，Move if less (SF != OF).
+	MOVQ    DX, ret+48(FP)          // 设置返回值
 
 tail:
-	CMPQ DX, $0x00
+	CMPQ DX, $0x00          // len(src) == 0 ?
 	JE   done
-	CMPQ DX, $0x01
+	CMPQ DX, $0x01          // len(src) == 1 ?
 	JE   handle1
-	CMPQ DX, $0x03
+	CMPQ DX, $0x03          // len(src) >= 3 ?
 	JBE  handle2to3
-	CMPQ DX, $0x04
+	CMPQ DX, $0x04          // len(src) == 4 ?
 	JE   handle4
-	CMPQ DX, $0x08
+	CMPQ DX, $0x08          // len(src) >= 8 ?
 	JB   handle5to7
 	JE   handle8
 	CMPQ DX, $0x10
@@ -33,10 +37,12 @@ tail:
 	JBE  handle17to32
 	CMPQ DX, $0x40
 	JBE  handle33to64
-	BTL  $0x08, github·com∕segmentio∕asm∕cpu·X86+0(SB)
-	JCC  generic
-	CMPQ DX, $0x00000080
-	JB   avx2_tail
+
+	BTL  $0x08, github·com∕segmentio∕asm∕cpu·X86+0(SB)  // Bit Test. 被测试位的状态被复制到进位标志 CF 。
+	JCC  generic                                        // Jump if above or equal (CF == 0).
+
+	CMPQ DX, $0x00000080    // len(src) < 128 ?
+	JB   avx2_tail          // JB： Jump if below (CF == 1).
 	JMP  avx2
 
 generic:
@@ -59,18 +65,25 @@ done:
 	RET
 
 handle1:
+    // (CX) => CL => (AX)
 	MOVB (CX), CL
 	MOVB CL, (AX)
 	RET
 
+
+// Addressing modes:
+//   - (DI)(BX*2): The location at address DI plus BX*2.
+//   - 64(DI)(BX*2): The location at address DI plus BX*2 plus 64. These modes accept only 1, 2, 4, and 8 as scale factors.
 handle2to3:
 	MOVW (CX), BX
-	MOVW -2(CX)(DX*1), CX
+	MOVW -2(CX)(DX*1), CX      // -2(CX)(DX*1) => CX + DX - 2
 	MOVW BX, (AX)
 	MOVW CX, -2(AX)(DX*1)
 	RET
 
+
 handle4:
+    // (CX) => CX => (AX)
 	MOVL (CX), CX
 	MOVL CX, (AX)
 	RET
@@ -114,32 +127,42 @@ handle33to64:
 
 	// AVX optimized version for medium to large size inputs.
 avx2:
+    // 把 src 开始的 128 Byte 拷贝到 Y0~Y4 上
 	VMOVDQU (CX), Y0
 	VMOVDQU 32(CX), Y1
 	VMOVDQU 64(CX), Y2
 	VMOVDQU 96(CX), Y3
+
+	// 把 Y0~Y4 拷贝到 dst 开始的 128 Byte
 	VMOVDQU Y0, (AX)
 	VMOVDQU Y1, 32(AX)
 	VMOVDQU Y2, 64(AX)
 	VMOVDQU Y3, 96(AX)
+
+	// 指针移动，进行下一个 128 Byte 的拷贝
 	ADDQ    $0x00000080, CX
 	ADDQ    $0x00000080, AX
-	SUBQ    $0x00000080, DX
-	JZ      avx2_done
-	CMPQ    DX, $0x00000080
-	JAE     avx2
+	SUBQ    $0x00000080, DX     // 如果等于 0 ，跳转到 avx2_done
+	JZ      avx2_done           // 结束？ JZ: Jump if equal (ZF == 1).
+
+	CMPQ    DX, $0x00000080     // 如果大于等于 128 ，跳转到 avx2
+	JAE     avx2                // JAE: Jump if above or equal (CF == 0).
 
 avx2_tail:
-	CMPQ    DX, $0x40
-	JBE     avx2_tail_1to64
-	VMOVDQU (CX), Y0
-	VMOVDQU 32(CX), Y1
-	VMOVDQU -64(CX)(DX*1), Y2
-	VMOVDQU -32(CX)(DX*1), Y3
+	CMPQ    DX, $0x40           // len(left) <= 64?
+	JBE     avx2_tail_1to64     // JBE: Jump if below or equal (CF == 1 or ZF == 1).
+
+    // 128 > len(left) > 64
+	VMOVDQU (CX), Y0            // 0 ~ 31
+	VMOVDQU 32(CX), Y1          // 32 ~ 63
+	VMOVDQU -64(CX)(DX*1), Y2   // => Y2 = CX + DX * 1 - 64 ，注意，因为 DX 介于 (64,128) 之间，这里拷贝的数据可能会与 Y0, Y1 有重叠，不过原样拷贝到 Dst 即可
+	VMOVDQU -32(CX)(DX*1), Y3   // => Y3 = CX + DX * 1 - 32
+
 	VMOVDQU Y0, (AX)
 	VMOVDQU Y1, 32(AX)
 	VMOVDQU Y2, -64(AX)(DX*1)
 	VMOVDQU Y3, -32(AX)(DX*1)
+
 	JMP     avx2_done
 
 avx2_tail_1to64:

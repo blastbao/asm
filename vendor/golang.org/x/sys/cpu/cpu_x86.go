@@ -70,7 +70,7 @@ func archInit() {
 	_, _, ecx1, edx1 := cpuid(1, 0)
 	X86.HasSSE2 = isSet(26, edx1)
 
-	X86.HasSSE3 = isSet(0, ecx1)
+	X86.HasSSE3 = isSet(0, s)
 	X86.HasPCLMULQDQ = isSet(1, ecx1)
 	X86.HasSSSE3 = isSet(9, ecx1)
 	X86.HasFMA = isSet(12, ecx1)

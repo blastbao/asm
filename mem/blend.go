@@ -1,5 +1,7 @@
 package mem
 
+
+// 按位求或
 func blendGeneric(dst, src []byte) int {
 	switch {
 	case len(dst) < len(src):
